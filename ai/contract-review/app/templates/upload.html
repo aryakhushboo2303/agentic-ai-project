@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Contract Review System</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f5f7fa; color: #1a1a2e; padding: 2rem; max-width: 800px; margin: 0 auto; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+    .subtitle { color: #666; margin-bottom: 2rem; font-size: 0.9rem; }
+    .card { background: #fff; border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .card h2 { font-size: 1rem; margin-bottom: 1rem; color: #333; }
+    input[type="file"], textarea { width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 0.75rem; font-size: 0.9rem; }
+    textarea { min-height: 80px; resize: vertical; }
+    button { background: #4f46e5; color: #fff; border: none; padding: 0.6rem 1.2rem; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+    button:hover { background: #4338ca; }
+    button:disabled { background: #a5b4fc; cursor: not-allowed; }
+    .status { padding: 0.5rem; border-radius: 4px; font-size: 0.85rem; margin-top: 0.5rem; }
+    .status.info { background: #eff6ff; color: #1d4ed8; }
+    .status.success { background: #f0fdf4; color: #15803d; }
+    .status.error { background: #fef2f2; color: #b91c1c; }
+    #results { white-space: pre-wrap; font-size: 0.85rem; background: #f8fafc; padding: 1rem; border-radius: 4px; max-height: 400px; overflow-y: auto; }
+    .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem; background: #e0e7ff; color: #3730a3; }
+  </style>
+</head>
+<body>
+  <h1>Contract Review System</h1>
+  <p class="subtitle">Upload a contract (PDF/DOCX) for AI-powered analysis and Q&amp;A</p>
+
+  <div class="card">
+    <h2>1. Upload Contract</h2>
+    <input type="file" id="fileInput" accept=".pdf,.docx" />
+    <button id="uploadBtn" onclick="uploadContract()">Upload</button>
+    <div id="uploadStatus"></div>
+  </div>
+
+  <div class="card" id="analyzeCard" style="display:none">
+    <h2>2. Run Analysis <span class="badge" id="contractBadge"></span></h2>
+    <button id="analyzeBtn" onclick="runAnalysis()">Analyze Contract</button>
+    <div id="analyzeStatus"></div>
+  </div>
+
+  <div class="card" id="qaCard" style="display:none">
+    <h2>3. Ask a Question</h2>
+    <textarea id="questionInput" placeholder="e.g. What is the termination notice period?"></textarea>
+    <button onclick="askQuestion()">Ask</button>
+    <div id="qaStatus"></div>
+  </div>
+
+  <div class="card" id="resultsCard" style="display:none">
+    <h2>Results</h2>
+    <div id="results"></div>
+  </div>
+
+  <script>
+    let contractId = null;
+
+    function showStatus(elId, msg, type = 'info') {
+      document.getElementById(elId).innerHTML = `<div class="status ${type}">${msg}</div>`;
+    }
+
+    async function uploadContract() {
+      const file = document.getElementById('fileInput').files[0];
+      if (!file) { showStatus('uploadStatus', 'Please select a file.', 'error'); return; }
+
+      const btn = document.getElementById('uploadBtn');
+      btn.disabled = true;
+      showStatus('uploadStatus', 'Uploading...');
+
+      const form = new FormData();
+      form.append('file', file);
+
+      try {
+        const res = await fetch('/api/v1/contracts', { method: 'POST', body: form });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error?.message || 'Upload failed');
+
+        contractId = data.id;
+        showStatus('uploadStatus', `Uploaded: ${data.filename} (${data.status})`, 'success');
+        document.getElementById('analyzeCard').style.display = 'block';
+        document.getElementById('qaCard').style.display = 'block';
+        document.getElementById('contractBadge').textContent = contractId.slice(0, 8) + '...';
+      } catch (e) {
+        showStatus('uploadStatus', e.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function runAnalysis() {
+      const btn = document.getElementById('analyzeBtn');
+      btn.disabled = true;
+      showStatus('analyzeStatus', 'Analysis running (this may take a few minutes)...');
+
+      try {
+        await fetch(`/api/v1/contracts/${contractId}/analyze`, { method: 'POST' });
+        await pollAnalysis();
+      } catch (e) {
+        showStatus('analyzeStatus', e.message, 'error');
+        btn.disabled = false;
+      }
+    }
+
+    async function pollAnalysis() {
+      for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 5000));
+        const res = await fetch(`/api/v1/contracts/${contractId}/analysis`);
+        const data = await res.json();
+        if (data.status === 'ready') {
+          showStatus('analyzeStatus', 'Analysis complete!', 'success');
+          document.getElementById('resultsCard').style.display = 'block';
+          document.getElementById('results').textContent = JSON.stringify(data, null, 2);
+          document.getElementById('analyzeBtn').disabled = false;
+          return;
+        }
+        if (data.status === 'failed') {
+          showStatus('analyzeStatus', 'Analysis failed. Check server logs.', 'error');
+          document.getElementById('analyzeBtn').disabled = false;
+          return;
+        }
+        showStatus('analyzeStatus', `Status: ${data.status}... still running`);
+      }
+      showStatus('analyzeStatus', 'Timed out. Check /api/v1/contracts/{id}/analysis', 'error');
+      document.getElementById('analyzeBtn').disabled = false;
+    }
+
+    async function askQuestion() {
+      const question = document.getElementById('questionInput').value.trim();
+      if (!question) { showStatus('qaStatus', 'Enter a question.', 'error'); return; }
+
+      showStatus('qaStatus', 'Thinking...');
+      try {
+        const res = await fetch(`/api/v1/contracts/${contractId}/qa`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error?.message || 'Q&A failed');
+
+        showStatus('qaStatus', '', 'success');
+        document.getElementById('resultsCard').style.display = 'block';
+        document.getElementById('results').textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        showStatus('qaStatus', e.message, 'error');
+      }
+    }
+  </script>
+</body>
+</html>
